@@ -130,8 +130,12 @@ def update_existing_row(
     row_number: int,
     headers: List[str],
     row_data: pd.Series,
+    dry_run: bool,
 ) -> None:
     """Обновляет значения столбцов 'Поставщик' и 'Менеджер' для найденного кода."""
+    if dry_run:
+        return
+
     updates = []
     for column_name in ["Поставщик", "Менеджер"]:
         column_number = headers.index(column_name) + 1
@@ -146,10 +150,18 @@ def update_existing_row(
 
 
 
-def add_new_row(worksheet, headers: List[str], row_data: pd.Series) -> int:
+def add_new_row(
+    worksheet,
+    headers: List[str],
+    row_data: pd.Series,
+    dry_run: bool,
+) -> int:
     """Добавляет новую строку в первую пустую строку и возвращает номер строки."""
     existing_values = worksheet.get_all_values()
     row_number = len(existing_values) + 1
+
+    if dry_run:
+        return row_number
 
     new_row = [""] * max(len(headers), 7)
     for column_name in REQUIRED_COLUMNS:
@@ -178,21 +190,32 @@ def apply_gray_fill(worksheet, row_number: int) -> None:
 
 
 
-def sync_excel_to_sheet(dataframe: pd.DataFrame, worksheet) -> List[str]:
+def sync_excel_to_sheet(
+    dataframe: pd.DataFrame,
+    worksheet,
+    dry_run: bool = False,
+) -> List[str]:
     """Синхронизирует строки из Excel с Google Таблицей и возвращает лог выполнения."""
     headers, row_index_by_code = read_sheet_data(worksheet)
     logs: List[str] = []
+    action_suffix = " (без записи)" if dry_run else ""
 
     for index, row in dataframe.iterrows():
         try:
             code = row["Код"]
             if code in row_index_by_code:
-                update_existing_row(worksheet, row_index_by_code[code], headers, row)
-                logs.append(f"Найден код: {code} → обновлено")
+                update_existing_row(
+                    worksheet,
+                    row_index_by_code[code],
+                    headers,
+                    row,
+                    dry_run,
+                )
+                logs.append(f"Найден код: {code} → обновлено{action_suffix}")
             else:
-                row_number = add_new_row(worksheet, headers, row)
+                row_number = add_new_row(worksheet, headers, row, dry_run)
                 row_index_by_code[code] = row_number
-                logs.append(f"Не найден код: {code} → добавлено")
+                logs.append(f"Не найден код: {code} → добавлено{action_suffix}")
         except Exception as error:  # noqa: BLE001
             logs.append(f"Ошибка обработки строки {index + 2}: {error}")
 
@@ -231,6 +254,10 @@ def main() -> None:
         type=["xls", "xlsx"],
         accept_multiple_files=False,
     )
+    dry_run = st.checkbox(
+        "Без записи",
+        help="Если галочка включена, приложение только проверяет данные и пишет лог, но не изменяет Google Таблицу.",
+    )
 
     if "logs" not in st.session_state:
         st.session_state.logs = []
@@ -244,8 +271,11 @@ def main() -> None:
 
             dataframe = load_excel_file(uploaded_file)
             worksheet = get_worksheet(sheet_id)
-            st.session_state.logs = sync_excel_to_sheet(dataframe, worksheet)
-            st.success("Обработка завершена")
+            st.session_state.logs = sync_excel_to_sheet(dataframe, worksheet, dry_run=dry_run)
+            if dry_run:
+                st.success("Проверка в режиме 'Без записи' завершена")
+            else:
+                st.success("Обработка завершена")
         except Exception as error:  # noqa: BLE001
             st.session_state.logs = [f"Ошибка: {error}"]
 
