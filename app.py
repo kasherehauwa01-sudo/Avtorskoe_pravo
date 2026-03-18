@@ -224,19 +224,20 @@ def sync_excel_to_sheet(
 
 
 def render_logs(logs: List[str]) -> None:
-    """Показывает лог выполнения в интерфейсе Streamlit."""
+    """Показывает лог выполнения в компактном окне с собственной прокруткой."""
     st.subheader("Лог выполнения")
     if not logs:
         st.info("Лог пока пуст. Загрузите файл и запустите обработку.")
         return
 
-    for message in logs:
-        if message.startswith("Ошибка"):
-            st.error(message)
-        elif "добавлено" in message:
-            st.warning(message)
-        else:
-            st.success(message)
+    log_text = "\n".join(logs)
+    st.text_area(
+        "Результат обработки",
+        value=log_text,
+        height=280,
+        disabled=True,
+        label_visibility="collapsed",
+    )
 
 
 
