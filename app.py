@@ -1,7 +1,7 @@
 import json
 from io import BytesIO
 from pathlib import Path
-from typing import List, Tuple
+from typing import Any, Dict, List, Tuple
 
 import gspread
 import pandas as pd
@@ -98,8 +98,8 @@ def get_worksheet(sheet_id: str):
 
 
 
-def read_sheet_data(worksheet) -> Tuple[List[str], dict]:
-    """Читает заголовки и создает индекс строк по значению столбца 'Код'."""
+def read_sheet_data(worksheet) -> Tuple[List[str], Dict[str, int], int]:
+    """Читает заголовки, индекс кодов и номер первой пустой строки."""
     values = worksheet.get_all_values()
     if not values:
         raise ValueError(
@@ -115,70 +115,67 @@ def read_sheet_data(worksheet) -> Tuple[List[str], dict]:
         )
 
     code_index = headers.index("Код")
-    row_index_by_code = {}
+    row_index_by_code: Dict[str, int] = {}
     for row_number, row in enumerate(values[1:], start=2):
         code = row[code_index].strip() if code_index < len(row) else ""
         if code:
             row_index_by_code[code] = row_number
 
-    return headers, row_index_by_code
+    next_row_number = len(values) + 1
+    return headers, row_index_by_code, next_row_number
 
 
 
-def update_existing_row(
-    worksheet,
-    row_number: int,
-    headers: List[str],
-    row_data: pd.Series,
-    dry_run: bool,
-) -> None:
-    """Обновляет значения столбцов 'Поставщик' и 'Менеджер' для найденного кода."""
-    if dry_run:
-        return
-
-    updates = []
+def build_update_requests(headers: List[str], row_number: int, row_data: pd.Series) -> List[Dict[str, Any]]:
+    """Готовит пакет обновлений для существующей строки."""
+    requests: List[Dict[str, Any]] = []
     for column_name in ["Поставщик", "Менеджер"]:
         column_number = headers.index(column_name) + 1
-        updates.append(
+        requests.append(
             {
                 "range": rowcol_to_a1(row_number, column_number),
                 "values": [[row_data[column_name]]],
             }
         )
-
-    worksheet.batch_update(updates, value_input_option="USER_ENTERED")
-
+    return requests
 
 
-def add_new_row(
-    worksheet,
-    headers: List[str],
-    row_data: pd.Series,
-    dry_run: bool,
-) -> int:
-    """Добавляет новую строку в первую пустую строку и возвращает номер строки."""
-    existing_values = worksheet.get_all_values()
-    row_number = len(existing_values) + 1
 
-    if dry_run:
-        return row_number
-
+def build_new_row_values(headers: List[str], row_data: pd.Series) -> List[str]:
+    """Формирует массив значений для новой строки."""
     new_row = [""] * max(len(headers), 7)
     for column_name in REQUIRED_COLUMNS:
         column_number = headers.index(column_name)
         new_row[column_number] = row_data[column_name]
-
-    range_name = f"A{row_number}:{rowcol_to_a1(row_number, len(new_row))}"
-    worksheet.update(range_name, [new_row], value_input_option="USER_ENTERED")
-    apply_gray_fill(worksheet, row_number)
-    return row_number
+    return new_row
 
 
 
-def apply_gray_fill(worksheet, row_number: int) -> None:
-    """Применяет светло-серую заливку к столбцам 1-7 добавленной строки."""
+def execute_update_requests(worksheet, update_requests: List[Dict[str, Any]]) -> None:
+    """Выполняет пакет обновлений существующих строк одним запросом."""
+    if not update_requests:
+        return
+
+    worksheet.batch_update(update_requests, value_input_option="USER_ENTERED")
+
+
+
+def append_new_rows(worksheet, rows_to_append: List[List[str]], start_row_number: int) -> None:
+    """Добавляет новые строки в таблицу одним запросом и окрашивает весь диапазон."""
+    if not rows_to_append:
+        return
+
+    end_row_number = start_row_number + len(rows_to_append) - 1
+    range_name = f"A{start_row_number}:{rowcol_to_a1(end_row_number, len(rows_to_append[0]))}"
+    worksheet.update(range_name, rows_to_append, value_input_option="USER_ENTERED")
+    apply_gray_fill(worksheet, start_row_number, end_row_number)
+
+
+
+def apply_gray_fill(worksheet, start_row_number: int, end_row_number: int) -> None:
+    """Применяет светло-серую заливку к столбцам 1-7 для диапазона новых строк."""
     worksheet.format(
-        f"A{row_number}:G{row_number}",
+        f"A{start_row_number}:G{end_row_number}",
         {
             "backgroundColor": {
                 "red": 0.9,
@@ -196,28 +193,41 @@ def sync_excel_to_sheet(
     dry_run: bool = False,
 ) -> List[str]:
     """Синхронизирует строки из Excel с Google Таблицей и возвращает лог выполнения."""
-    headers, row_index_by_code = read_sheet_data(worksheet)
+    headers, row_index_by_code, next_row_number = read_sheet_data(worksheet)
     logs: List[str] = []
     action_suffix = " (без записи)" if dry_run else ""
+    update_requests: List[Dict[str, Any]] = []
+    rows_to_append: List[List[str]] = []
+    pending_new_rows_by_code: Dict[str, int] = {}
+    next_new_row_offset = 0
 
     for index, row in dataframe.iterrows():
         try:
             code = row["Код"]
-            if code in row_index_by_code:
-                update_existing_row(
-                    worksheet,
-                    row_index_by_code[code],
-                    headers,
-                    row,
-                    dry_run,
-                )
+            if code in pending_new_rows_by_code:
+                if not dry_run:
+                    rows_to_append[pending_new_rows_by_code[code]] = build_new_row_values(headers, row)
+                logs.append(f"Повтор кода в Excel: {code} → обновлена подготовленная новая строка{action_suffix}")
+            elif code in row_index_by_code:
+                if not dry_run:
+                    update_requests.extend(
+                        build_update_requests(headers, row_index_by_code[code], row)
+                    )
                 logs.append(f"Найден код: {code} → обновлено{action_suffix}")
             else:
-                row_number = add_new_row(worksheet, headers, row, dry_run)
-                row_index_by_code[code] = row_number
+                planned_row_number = next_row_number + next_new_row_offset
+                row_index_by_code[code] = planned_row_number
+                pending_new_rows_by_code[code] = next_new_row_offset
+                next_new_row_offset += 1
+                if not dry_run:
+                    rows_to_append.append(build_new_row_values(headers, row))
                 logs.append(f"Не найден код: {code} → добавлено{action_suffix}")
         except Exception as error:  # noqa: BLE001
             logs.append(f"Ошибка обработки строки {index + 2}: {error}")
+
+    if not dry_run:
+        execute_update_requests(worksheet, update_requests)
+        append_new_rows(worksheet, rows_to_append, next_row_number)
 
     return logs
 
