@@ -14,6 +14,7 @@ SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/drive",
 ]
+DEFAULT_SHEET_ID = "19hfmYJtv9FCzS6vSJ6OcwTRK8TuSNfgjCjEdF8JRs1Y"
 CONFIG_PATH = Path("config.json")
 CREDENTIALS_PATH = Path("credentials.json")
 
@@ -21,12 +22,13 @@ CREDENTIALS_PATH = Path("credentials.json")
 def load_config_sheet_id() -> str:
     """Читает ID Google Таблицы из config.json, если файл существует."""
     if not CONFIG_PATH.exists():
-        return ""
+        return DEFAULT_SHEET_ID
 
     with CONFIG_PATH.open("r", encoding="utf-8") as file:
         data = json.load(file)
 
-    return str(data.get("google_sheet_id", "")).strip()
+    return str(data.get("google_sheet_id", DEFAULT_SHEET_ID)).strip() or DEFAULT_SHEET_ID
+
 
 
 def load_excel_file(uploaded_file) -> pd.DataFrame:
@@ -59,16 +61,30 @@ def load_excel_file(uploaded_file) -> pd.DataFrame:
     return dataframe.reset_index(drop=True)
 
 
+
+def load_service_account_info() -> dict:
+    """Получает данные service account из Streamlit secrets или credentials.json."""
+    secret_section = st.secrets.get("gcp_service_account")
+    if secret_section:
+        return dict(secret_section)
+
+    if CREDENTIALS_PATH.exists():
+        with CREDENTIALS_PATH.open("r", encoding="utf-8") as file:
+            return json.load(file)
+
+    raise FileNotFoundError(
+        "Не найдены данные сервисного аккаунта. Добавьте их в Streamlit secrets "
+        "(секция gcp_service_account) или создайте файл credentials.json в корне проекта."
+    )
+
+
 @st.cache_resource(show_spinner=False)
 def connect_to_google() -> gspread.Client:
     """Создает авторизованное подключение к Google Sheets API."""
-    if not CREDENTIALS_PATH.exists():
-        raise FileNotFoundError(
-            "Файл credentials.json не найден в корне проекта."
-        )
-
-    credentials = Credentials.from_service_account_file(
-        str(CREDENTIALS_PATH), scopes=SCOPES
+    service_account_info = load_service_account_info()
+    credentials = Credentials.from_service_account_info(
+        service_account_info,
+        scopes=SCOPES,
     )
     return gspread.authorize(credentials)
 
@@ -109,7 +125,12 @@ def read_sheet_data(worksheet) -> Tuple[List[str], dict]:
 
 
 
-def update_existing_row(worksheet, row_number: int, headers: List[str], row_data: pd.Series) -> None:
+def update_existing_row(
+    worksheet,
+    row_number: int,
+    headers: List[str],
+    row_data: pd.Series,
+) -> None:
     """Обновляет значения столбцов 'Поставщик' и 'Менеджер' для найденного кода."""
     updates = []
     for column_name in ["Поставщик", "Менеджер"]:
@@ -202,12 +223,8 @@ def main() -> None:
     st.title("Синхронизация Excel-файла с Google Таблицей")
     st.write("Загрузите xls таблицу со столбцами: Код, Поставщик, Менеджер")
 
-    default_sheet_id = load_config_sheet_id()
-    sheet_id = st.text_input(
-        "ID Google Таблицы",
-        value=default_sheet_id,
-        help="Можно указать ID вручную или сохранить его в config.json",
-    ).strip()
+    sheet_id = load_config_sheet_id()
+    st.caption(f"Google Таблица по умолчанию: {sheet_id}")
 
     uploaded_file = st.file_uploader(
         "Выберите Excel-файл",
@@ -221,7 +238,7 @@ def main() -> None:
     if st.button("Запустить обработку", type="primary"):
         try:
             if not sheet_id:
-                raise ValueError("Укажите ID Google Таблицы в поле выше или в файле config.json")
+                raise ValueError("Не удалось определить ID Google Таблицы из настроек приложения")
             if uploaded_file is None:
                 raise ValueError("Загрузите Excel-файл перед запуском обработки")
 

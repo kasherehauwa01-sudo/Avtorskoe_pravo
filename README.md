@@ -9,7 +9,8 @@
 - обновление значений `Поставщик` и `Менеджер`, если код найден;
 - добавление новой строки, если код отсутствует;
 - выделение новых строк светло-серым цветом в диапазоне столбцов `1–7`;
-- вывод подробного лога обработки в интерфейсе Streamlit.
+- вывод подробного лога обработки в интерфейсе Streamlit;
+- подключение к Google Sheets API через `Streamlit secrets`.
 
 ## Структура проекта
 
@@ -17,8 +18,9 @@
 /project
   app.py
   requirements.txt
-  credentials.json
   config.json
+  .streamlit/
+    secrets.toml
   README.md
 ```
 
@@ -34,7 +36,7 @@ pip install -r requirements.txt
 streamlit run app.py
 ```
 
-## Подключение к Google Sheets API
+## Подключение к Google Sheets API через Streamlit secrets
 
 1. Перейдите в Google Cloud Console:  
    https://console.cloud.google.com/
@@ -55,14 +57,34 @@ streamlit run app.py
    - `Add Key` → `Create new key`;
    - формат `JSON`;
    - скачайте файл.
-7. Переименуйте скачанный файл в `credentials.json`.
-8. Поместите `credentials.json` в корень проекта.
+7. Создайте в проекте папку `.streamlit`, если ее еще нет.
+8. Создайте файл `.streamlit/secrets.toml`.
+9. Скопируйте значения из скачанного JSON-ключа в секцию `gcp_service_account`.
+
+Пример `.streamlit/secrets.toml`:
+
+```toml
+[gcp_service_account]
+type = "service_account"
+project_id = "your-project-id"
+private_key_id = "your-private-key-id"
+private_key = "-----BEGIN PRIVATE KEY-----\nYOUR_PRIVATE_KEY\n-----END PRIVATE KEY-----\n"
+client_email = "your-service-account@your-project-id.iam.gserviceaccount.com"
+client_id = "1234567890"
+auth_uri = "https://accounts.google.com/o/oauth2/auth"
+token_uri = "https://oauth2.googleapis.com/token"
+auth_provider_x509_cert_url = "https://www.googleapis.com/oauth2/v1/certs"
+client_x509_cert_url = "https://www.googleapis.com/robot/v1/metadata/x509/your-service-account%40your-project-id.iam.gserviceaccount.com"
+universe_domain = "googleapis.com"
+```
+
+> Если вы разворачиваете приложение в Streamlit Community Cloud, эти же поля нужно добавить в разделе `App settings` → `Secrets`.
 
 ## Доступ к Google Таблице
 
 1. Откройте нужную Google Таблицу.
 2. Нажмите `Поделиться`.
-3. Откройте файл `credentials.json` и скопируйте значение `client_email`.
+3. Возьмите значение `client_email` из `.streamlit/secrets.toml`.
 4. Добавьте этот email в доступы таблицы как редактора.
 
 ## Где взять ID таблицы
@@ -79,16 +101,13 @@ ID таблицы:
 XXXXXXXXXXXX
 ```
 
-ID можно:
-
-- ввести вручную в интерфейсе Streamlit;
-- сохранить в `config.json` в корне проекта.
+По умолчанию приложение использует ID таблицы `19hfmYJtv9FCzS6vSJ6OcwTRK8TuSNfgjCjEdF8JRs1Y`. При необходимости его можно изменить в `config.json` в корне проекта.
 
 Пример `config.json`:
 
 ```json
 {
-  "google_sheet_id": "XXXXXXXXXXXX"
+  "google_sheet_id": "19hfmYJtv9FCzS6vSJ6OcwTRK8TuSNfgjCjEdF8JRs1Y"
 }
 ```
 
@@ -103,8 +122,8 @@ ID можно:
 ## Логика работы
 
 1. Приложение читает Excel-файл.
-2. Подключается к Google Sheets API.
-3. Открывает Google Таблицу по ID.
+2. Подключается к Google Sheets API через `Streamlit secrets`.
+3. Открывает Google Таблицу по ID из `config.json` или встроенного значения по умолчанию.
 4. Для каждой строки из Excel:
    - берет значение из колонки `Код`;
    - ищет строку в Google Таблице по колонке `Код`;
@@ -115,9 +134,9 @@ ID можно:
 ## Возможные ошибки
 
 - Нет доступа к таблице → проверьте, что сервисному аккаунту выдан доступ редактора.
-- Неверный ID таблицы → убедитесь, что в поле или `config.json` указан правильный идентификатор.
+- Неверно заполнен `.streamlit/secrets.toml` → проверьте, что все поля из JSON-ключа перенесены без изменений.
+- Неверный ID таблицы → убедитесь, что в `config.json` указан правильный идентификатор.
 - Неправильный формат Excel → проверьте наличие столбцов `Код`, `Поставщик`, `Менеджер`.
-- Отсутствует `credentials.json` → поместите JSON-ключ сервисного аккаунта в корень проекта.
 
 ## Интерфейс
 
@@ -125,7 +144,7 @@ ID можно:
 
 - заголовок;
 - инструкция: `Загрузите xls таблицу со столбцами: Код, Поставщик, Менеджер`;
-- поле ввода ID Google Таблицы;
+- встроенный ID Google Таблицы по умолчанию без отдельного поля ввода;
 - загрузка файла;
 - кнопка `Запустить обработку`;
 - лог выполнения с сообщениями об обновлении, добавлении и ошибках.
